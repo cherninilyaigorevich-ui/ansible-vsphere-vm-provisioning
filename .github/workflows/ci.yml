@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          ansible-galaxy collection install -r requirements.yml
+      - name: Validate YAML
+        run: |
+          python -m pip install PyYAML
+          python - <<'PY'
+          from pathlib import Path
+          import yaml
+          for path in [*Path('inventory').rglob('*.yml'), *Path('playbooks').rglob('*.yml'), *Path('roles').rglob('*.yml'), Path('requirements.yml')]:
+              with path.open(encoding='utf-8') as f:
+                  list(yaml.safe_load_all(f))
+              print('OK', path)
+          PY
+      - name: Prevent accidental credential files
+        run: |
+          if git ls-files | grep -E '(^|/)(vault\\.ya?ml|\\.env|id_rsa|id_ed25519)$'; then
+            echo 'Credential file is tracked'; exit 1
+          fi

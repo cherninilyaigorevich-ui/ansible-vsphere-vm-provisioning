@@ -1,0 +1,564 @@
+---
+# ==================================================================
+# PLAY 1 — VMWARE PROVISIONING / RESUME PREPARATION
+# ==================================================================
+
+- name: Prepare Example Windows workstation deployment
+  hosts: localhost
+  gather_facts: false
+
+  # --------------------------------------------------------------
+  # VMware credentials
+  #
+  # Username:
+  #   inventory/group_vars/all/main.yml
+  #
+  # Password:
+  #   encrypted Ansible Vault
+  # --------------------------------------------------------------
+
+  environment:
+    VMWARE_HOST: "{{ vmware.hostname }}"
+    VMWARE_USER: "{{ accounts.vmware.username }}"
+    VMWARE_PASSWORD: "{{ vault_credentials.vmware.password }}"
+
+  tasks:
+    # ------------------------------------------------------------
+    # 1. INPUT / SITE VALIDATION
+    # ------------------------------------------------------------
+
+    - name: Check site parameter
+      ansible.builtin.assert:
+        that:
+          - site is defined
+          - site | length > 0
+        fail_msg: "Required parameter: site"
+
+    - name: Check requested site exists
+      ansible.builtin.assert:
+        that:
+          - site in sites
+        fail_msg: "Unknown site '{{ site }}'. Available sites: {{ sites.keys() | list }}"
+
+    - name: Load selected site configuration
+      ansible.builtin.set_fact:
+        site_config: "{{ sites[site] }}"
+
+    - name: Check common site configuration
+      ansible.builtin.assert:
+        that:
+          - site_config.vm_prefix is defined
+          - site_config.domain is defined
+          - site_config.ou is defined
+          - site_config.horizon_pool is defined
+        fail_msg: "Site '{{ site }}' common configuration is incomplete."
+
+    - name: Check provisioning site configuration
+      ansible.builtin.assert:
+        that:
+          - site_config.vm_folder is defined
+          - site_config.vm_network is defined
+        fail_msg: "Site '{{ site }}' provisioning configuration is incomplete."
+      when: not (resume | default(false) | bool)
+
+
+    # ------------------------------------------------------------
+    # 2. DEPLOYMENT MODE VALIDATION
+    # ------------------------------------------------------------
+
+    - name: Ensure provision and resume are not enabled together
+      ansible.builtin.assert:
+        that:
+          - not (
+              (provision | default(false) | bool)
+              and
+              (resume | default(false) | bool)
+            )
+        fail_msg: "Use either provision=true or resume=true, not both."
+
+    - name: Validate resume stage
+      ansible.builtin.assert:
+        that:
+          - (resume_stage | default('windows')) in ['windows', 'horizon']
+        fail_msg: "Supported resume_stage values: windows, horizon."
+      when: resume | default(false) | bool
+
+    - name: Validate VM name for resume
+      ansible.builtin.assert:
+        that:
+          - vm_name is defined
+          - (vm_name | default('') | length) > 0
+          - vm_name is match('^' ~ site_config.vm_prefix ~ '[0-9]{3}$')
+        fail_msg: "resume=true requires a valid -e vm_name={{ site_config.vm_prefix }}XXX"
+      when: resume | default(false) | bool
+
+
+    # ------------------------------------------------------------
+    # 3. VCENTER AUTOMATION ACCOUNT VALIDATION
+    # ------------------------------------------------------------
+
+    - name: Validate vCenter automation credentials
+      ansible.builtin.assert:
+        that:
+          - vmware.hostname is defined
+          - vmware.hostname | length > 0
+
+          - accounts.vmware.username is defined
+          - accounts.vmware.username | length > 0
+
+          - vault_credentials.vmware.password is defined
+          - vault_credentials.vmware.password | length > 0
+
+        fail_msg: >-
+          vCenter automation account or Vault password
+          is not configured.
+      no_log: true
+
+
+    # ------------------------------------------------------------
+    # 4. HORIZON AUTOMATION ACCOUNT VALIDATION
+    # ------------------------------------------------------------
+
+    - name: Validate Horizon automation credentials
+      ansible.builtin.assert:
+        that:
+          - accounts.horizon.username is defined
+          - accounts.horizon.username | length > 0
+
+          - vault_credentials.horizon.password is defined
+          - vault_credentials.horizon.password | length > 0
+
+        fail_msg: >-
+          Horizon automation account or Vault password
+          is not configured.
+      no_log: true
+      when: >
+        (provision | default(false) | bool)
+        or
+        (resume | default(false) | bool)
+
+
+    # ------------------------------------------------------------
+    # 5. WINDOWS / ACTIVE DIRECTORY ACCOUNT VALIDATION
+    #
+    # Not required for Horizon-only resume.
+    # ------------------------------------------------------------
+
+    - name: Validate site automation account configuration
+      ansible.builtin.assert:
+        that:
+          - site in ((accounts | default({})).get('sites', {}))
+          - site in ((vault_credentials | default({})).get('sites', {}))
+        fail_msg: >-
+          Automation accounts or Vault credentials are not configured
+          for site '{{ site }}'.
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+    - name: Load selected site account configuration
+      ansible.builtin.set_fact:
+        site_accounts: "{{ accounts.sites[site] }}"
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+    - name: Load selected site secrets
+      ansible.builtin.set_fact:
+        site_secrets: "{{ vault_credentials.sites[site] }}"
+      no_log: true
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+    - name: Validate required site automation credentials
+      ansible.builtin.assert:
+        that:
+          - site_accounts.ad_read_username is defined
+          - site_accounts.ad_join_username is defined
+          - site_accounts.windows_local_admin_username is defined
+
+          - site_secrets.ad_read_password is defined
+          - site_secrets.ad_join_password is defined
+          - site_secrets.windows_local_admin_password is defined
+
+          - site_secrets.ad_read_password | length > 0
+          - site_secrets.ad_join_password | length > 0
+          - site_secrets.windows_local_admin_password | length > 0
+
+        fail_msg: >-
+          One or more required automation credentials are missing
+          for site '{{ site }}'.
+      no_log: true
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+
+    # ------------------------------------------------------------
+    # 6. VM NAME ALLOCATION
+    # ------------------------------------------------------------
+
+    - name: Allocate next VM name
+      ansible.builtin.include_role:
+        name: vm_name
+      when: not (resume | default(false) | bool)
+
+
+    # ------------------------------------------------------------
+    # 7. VMWARE PLACEMENT
+    # ------------------------------------------------------------
+
+    - name: Calculate VMware placement
+      ansible.builtin.include_role:
+        name: vmware_placement
+      when: not (resume | default(false) | bool)
+
+
+    # ------------------------------------------------------------
+    # 8. DEPLOYMENT PLAN
+    # ------------------------------------------------------------
+
+    - name: Show new VM deployment plan
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "Example VM deployment plan"
+          - "========================================"
+          - "Mode: NEW VM"
+          - "Site: {{ site }}"
+          - "VM: {{ vm_name }}"
+          - "Template: {{ vmware.template }}"
+          - "Datacenter: {{ vmware.datacenter }}"
+          - "Folder: {{ site_config.vm_folder }}"
+          - "Network: {{ site_config.vm_network }}"
+          - "Domain: {{ site_config.domain }}"
+          - "OU: {{ site_config.ou }}"
+          - "Horizon pool: {{ site_config.horizon_pool }}"
+          - "ESXi: {{ selected_host.name }}"
+          - "ESXi free RAM: {{ '%.1f' | format(selected_host.mem_free_pct | float) }} %"
+          - "Datastore: {{ selected_datastore.name }}"
+          - "Datastore free: {{ '%.2f' | format((selected_datastore.freeSpace | float) / 1024 / 1024 / 1024) }} GiB"
+          - "========================================"
+          - "PLAN COMPLETE"
+          - "No VM has been created."
+          - "AD preflight will run before clone when provision=true."
+      when: not (resume | default(false) | bool)
+
+    - name: Show resume plan
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "Example VM deployment RESUME"
+          - "========================================"
+          - "Mode: RESUME"
+          - "Resume stage: {{ resume_stage | default('windows') }}"
+          - "Site: {{ site }}"
+          - "VM: {{ vm_name }}"
+          - "Domain: {{ site_config.domain }}"
+          - "OU: {{ site_config.ou }}"
+          - "Horizon pool: {{ site_config.horizon_pool }}"
+          - "========================================"
+          - "CONTINUING EXISTING VM"
+          - "No new VM will be created."
+      when: resume | default(false) | bool
+
+
+    # ------------------------------------------------------------
+    # 9. RESUME EXISTING VM VALIDATION
+    # ------------------------------------------------------------
+
+    - name: Validate existing VM for resume
+      ansible.builtin.include_role:
+        name: vmware_resume
+      when: resume | default(false) | bool
+
+
+    # ------------------------------------------------------------
+    # 10. ACTIVE DIRECTORY PREFLIGHT
+    #
+    # Account:
+    #   svc_ansible_ad_ro
+    #
+    # Permissions:
+    #   read-only LDAP
+    #
+    # Rules:
+    # - all configured DCs must answer;
+    # - VM name must be absent on every DC;
+    # - AD objects are never deleted automatically.
+    # ------------------------------------------------------------
+
+    - name: Check Active Directory preflight configuration
+      ansible.builtin.assert:
+        that:
+          - site_config.ad is defined
+          - site_config.ad.servers is defined
+          - site_config.ad.servers | length > 0
+          - site_config.ad.base_dn is defined
+          - site_config.ad.base_dn | length > 0
+        fail_msg: >-
+          Active Directory preflight is not configured
+          for site '{{ site }}'.
+          No VM has been created.
+      when: provision | default(false) | bool
+
+    - name: Check computer name on all Active Directory Domain Controllers
+      ansible.builtin.include_role:
+        name: ad_preflight
+      vars:
+        ad_bind_username: "{{ site_accounts.ad_read_username }}"
+        ad_bind_password: "{{ site_secrets.ad_read_password }}"
+      when: provision | default(false) | bool
+
+
+    # ------------------------------------------------------------
+    # 11. PROVISION NEW VM
+    # ------------------------------------------------------------
+
+    - name: Provision virtual machine
+      ansible.builtin.include_role:
+        name: vmware_clone
+      when: provision | default(false) | bool
+
+    # ------------------------------------------------------------
+    # 12. POST-CLONE NORMALIZATION
+    #
+    # Runs after a new clone and also during Windows resume.
+    # This makes recovery safe when provisioning stopped
+    # after the VM had already been created.
+    # ------------------------------------------------------------
+
+    - name: Normalize VM after clone
+      ansible.builtin.include_role:
+        name: vmware_post_clone
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+
+    # ------------------------------------------------------------
+    # 12. GUEST READINESS
+    # ------------------------------------------------------------
+
+    - name: Power on VM and wait for guest readiness
+      ansible.builtin.include_role:
+        name: vmware_guest_ready
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+
+    # ------------------------------------------------------------
+    # 13. DYNAMIC WINDOWS INVENTORY
+    #
+    # WinRM:
+    #   .\example_adm
+    #   password -> Vault
+    #
+    # Domain Join:
+    #   svc_ansible_ad_join
+    #   password -> Vault
+    # ------------------------------------------------------------
+
+    - name: Add VM to dynamic Windows inventory
+      ansible.builtin.add_host:
+        name: "{{ vm_name }}"
+        groups: provisioned_windows
+
+        ansible_host: "{{ guest_ip }}"
+        ansible_connection: winrm
+        ansible_port: 5985
+        ansible_winrm_transport: ntlm
+
+        ansible_user: "{{ site_accounts.windows_local_admin_username }}"
+        ansible_password: "{{ site_secrets.windows_local_admin_password }}"
+
+        target_domain: "{{ site_config.domain }}"
+        target_ou: "{{ site_config.ou }}"
+
+        domain_username: "{{ site_accounts.ad_join_username }}"
+        domain_password: "{{ site_secrets.ad_join_password }}"
+
+      no_log: true
+
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+
+# ==================================================================
+# PLAY 2 — WINDOWS CONFIGURATION
+# ==================================================================
+
+- name: Configure provisioned Windows workstation
+  hosts: provisioned_windows
+  gather_facts: false
+
+  tasks:
+    # ------------------------------------------------------------
+    # 14. WINDOWS CONNECTIVITY
+    # ------------------------------------------------------------
+
+    - name: Wait for WinRM connection
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 5
+        connect_timeout: 10
+
+    - name: Verify Windows connectivity
+      ansible.windows.win_ping:
+
+
+    # ------------------------------------------------------------
+    # 15. WINDOWS CONFIGURATION
+    # ------------------------------------------------------------
+
+    - name: Configure Windows workstation
+      ansible.builtin.include_role:
+        name: windows_configure
+
+
+    # ------------------------------------------------------------
+    # 16. WINDOWS VALIDATION
+    # ------------------------------------------------------------
+
+    - name: Validate Windows workstation
+      ansible.builtin.include_role:
+        name: windows_validate
+
+
+# ==================================================================
+# PLAY 3 — HORIZON REGISTRATION
+# ==================================================================
+
+- name: Register provisioned workstation in VMware Horizon
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    # ------------------------------------------------------------
+    # 17. HORIZON REGISTRATION / VALIDATION
+    #
+    # Account:
+    #   svc_ansible_horizon
+    #
+    # Password:
+    #   Ansible Vault
+    #
+    # Permissions:
+    #   Ansible_VDI_Provisioner -> VDI-SPB
+    #   Global Configuration and Policy Administrators (Read only)
+    # ------------------------------------------------------------
+
+    - name: Add or validate workstation in Horizon desktop pool
+      ansible.builtin.include_role:
+        name: horizon_desktop
+      vars:
+        horizon_vm_name: "{{ vm_name }}"
+        horizon_pool_name: "{{ site_config.horizon_pool }}"
+
+        horizon_username: "{{ accounts.horizon.username }}"
+        horizon_password: "{{ vault_credentials.horizon.password }}"
+
+      when: >
+        (provision | default(false) | bool)
+        or
+        (resume | default(false) | bool)
+
+
+    # ------------------------------------------------------------
+    # 18. FULL DEPLOYMENT REPORT
+    # ------------------------------------------------------------
+
+    - name: Show full deployment report
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "EXAMPLE VDI DEPLOYMENT COMPLETED"
+          - "========================================"
+          - "Mode: {{ 'RESUME/WINDOWS' if (resume | default(false) | bool) else 'PROVISION' }}"
+          - "Site: {{ site }}"
+          - "VM: {{ vm_name }}"
+          - "IP: {{ guest_ip }}"
+          - "ESXi: {{ selected_host.name if selected_host is defined else 'existing VM' }}"
+          - "Datastore: {{ selected_datastore.name if selected_datastore is defined else 'existing VM' }}"
+          - "Hostname: {{ hostvars[vm_name].ansible_facts.hostname }}"
+          - "FQDN: {{ hostvars[vm_name].ansible_facts.fqdn }}"
+          - "Domain: {{ hostvars[vm_name].ansible_facts.windows_domain }}"
+          - "OU: {{ site_config.ou }}"
+          - "VMware Tools: {{ hostvars[vm_name].vmtools_service.services[0].state }}"
+          - "Horizon Agent service: {{ hostvars[vm_name].horizon_service.services[0].state }}"
+          - "Horizon Pool: {{ site_config.horizon_pool }}"
+          - "Horizon State: {{ horizon_final_machines[0].state }}"
+          - "Status: READY"
+          - "========================================"
+
+      when: >
+        (provision | default(false) | bool)
+        or
+        (
+          (resume | default(false) | bool)
+          and
+          ((resume_stage | default('windows')) == 'windows')
+        )
+
+
+    # ------------------------------------------------------------
+    # 19. HORIZON-ONLY RESUME REPORT
+    # ------------------------------------------------------------
+
+    - name: Show Horizon resume report
+      ansible.builtin.debug:
+        msg:
+          - "========================================"
+          - "EXAMPLE VDI HORIZON RESUME COMPLETED"
+          - "========================================"
+          - "Mode: RESUME/HORIZON"
+          - "Site: {{ site }}"
+          - "VM: {{ vm_name }}"
+          - "Horizon Pool: {{ site_config.horizon_pool }}"
+          - "Horizon Machine ID: {{ horizon_final_machines[0].id }}"
+          - "Horizon State: {{ horizon_final_machines[0].state }}"
+          - "Agent Version: {{ horizon_final_machines[0].agent_version | default('unknown') }}"
+          - "Status: READY"
+          - "========================================"
+
+      when:
+        - resume | default(false) | bool
+        - (resume_stage | default('windows')) == 'horizon'

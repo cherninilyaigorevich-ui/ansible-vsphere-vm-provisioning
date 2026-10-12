@@ -1,0 +1,96 @@
+---
+- name: Get ESXi host facts
+  community.vmware.vmware_host_facts:
+    esxi_hostname: "{{ item }}"
+    validate_certs: false
+  loop: "{{ vmware.esxi_hosts }}"
+  register: esxi_results
+
+- name: Initialize eligible hosts list
+  ansible.builtin.set_fact:
+    eligible_hosts: []
+
+- name: Build eligible hosts list
+  ansible.builtin.set_fact:
+    eligible_hosts: >-
+      {{
+        eligible_hosts + [
+          {
+            'name': item.ansible_facts.ansible_hostname,
+            'mem_total_mb': item.ansible_facts.ansible_memtotal_mb | int,
+            'mem_free_mb': item.ansible_facts.ansible_memfree_mb | int,
+            'mem_free_pct': (
+              (item.ansible_facts.ansible_memfree_mb | float)
+              /
+              (item.ansible_facts.ansible_memtotal_mb | float)
+              * 100
+            )
+          }
+        ]
+      }}
+  loop: "{{ esxi_results.results }}"
+  when:
+    - item.ansible_facts.ansible_host_connection_state == 'connected'
+    - not item.ansible_facts.ansible_in_maintenance_mode
+  loop_control:
+    label: "{{ item.ansible_facts.ansible_hostname }}"
+
+- name: Ensure at least one ESXi host is eligible
+  ansible.builtin.assert:
+    that:
+      - eligible_hosts | length > 0
+    fail_msg: "No connected ESXi hosts outside maintenance mode were found."
+
+- name: Select ESXi with highest percentage of free RAM
+  ansible.builtin.set_fact:
+    selected_host: >-
+      {{
+        eligible_hosts
+        | sort(attribute='mem_free_pct', reverse=true)
+        | first
+      }}
+
+- name: Get datastore information
+  community.vmware.vmware_datastore_info:
+    datacenter: "{{ vmware.datacenter }}"
+    validate_certs: false
+  register: datastore_info
+
+- name: Build datastore prefix for selected ESXi
+  ansible.builtin.set_fact:
+    datastore_prefix: >-
+      {{
+        selected_host.name
+        | regex_search('host-[0-9]+')
+        | regex_replace('-', '')
+      }}
+
+- name: Find eligible SSD datastores
+  ansible.builtin.set_fact:
+    eligible_datastores: >-
+      {{
+        datastore_info.datastores
+        | selectattr(
+            'name',
+            'match',
+            '^' ~ datastore_prefix ~ '-ds[0-9]+-ssd$'
+          )
+        | selectattr('accessible', 'equalto', true)
+        | selectattr('maintenanceMode', 'equalto', 'normal')
+        | list
+      }}
+
+- name: Ensure eligible datastore exists
+  ansible.builtin.assert:
+    that:
+      - eligible_datastores | length > 0
+    fail_msg: "No eligible local SSD datastore found for {{ selected_host.name }}."
+
+- name: Select datastore with most free space
+  ansible.builtin.set_fact:
+    selected_datastore: >-
+      {{
+        eligible_datastores
+        | sort(attribute='freeSpace', reverse=true)
+        | first
+      }}

@@ -1,0 +1,48 @@
+---
+- name: Get existing virtual machines
+  community.vmware.vmware_vm_info:
+    validate_certs: false
+  register: existing_vms
+  no_log: true
+
+- name: Find existing VM names for selected site
+  ansible.builtin.set_fact:
+    site_vm_names: >-
+      {{
+        existing_vms.virtual_machines
+        | map(attribute='guest_name')
+        | select(
+            'match',
+            '^' ~ site_config.vm_prefix ~ '[0-9]{3}$'
+          )
+        | list
+      }}
+
+- name: Extract existing VM numbers
+  ansible.builtin.set_fact:
+    site_vm_numbers: >-
+      {{
+        site_vm_names
+        | map('regex_replace', '^' ~ site_config.vm_prefix, '')
+        | map('int')
+        | list
+      }}
+
+- name: Calculate next VM number
+  ansible.builtin.set_fact:
+    next_vm_number: >-
+      {{
+        ((site_vm_numbers | max) + 1)
+        if (site_vm_numbers | length > 0)
+        else 1
+      }}
+
+- name: Build new VM name
+  ansible.builtin.set_fact:
+    vm_name: "{{ site_config.vm_prefix }}{{ '%03d' | format(next_vm_number | int) }}"
+
+- name: Ensure generated VM does not already exist
+  ansible.builtin.assert:
+    that:
+      - vm_name not in (existing_vms.virtual_machines | map(attribute='guest_name') | list)
+    fail_msg: "Generated VM {{ vm_name }} already exists."

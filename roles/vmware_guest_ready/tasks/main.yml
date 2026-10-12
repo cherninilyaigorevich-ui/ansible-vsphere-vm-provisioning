@@ -1,0 +1,47 @@
+---
+- name: Power on virtual machine
+  community.vmware.vmware_guest:
+    datacenter: "{{ vmware.datacenter }}"
+    name: "{{ vm_name }}"
+    state: poweredon
+    validate_certs: false
+  register: power_on_result
+
+- name: Wait for VMware Tools
+  community.vmware.vmware_guest_tools_wait:
+    name: "{{ vm_name }}"
+    validate_certs: false
+
+- name: Wait for guest IPv4 address
+  community.vmware.vmware_guest_info:
+    name: "{{ vm_name }}"
+    validate_certs: false
+  register: guest_info
+  until:
+    - guest_info.instance.ipv4 is defined
+    - guest_info.instance.ipv4 is not none
+    - guest_info.instance.ipv4 | string | length > 0
+  retries: 30
+  delay: 10
+
+- name: Save guest IP address
+  ansible.builtin.set_fact:
+    guest_ip: "{{ guest_info.instance.ipv4 }}"
+
+- name: Validate guest readiness
+  ansible.builtin.assert:
+    that:
+      - guest_info.instance.hw_power_status == 'poweredOn'
+      - guest_info.instance.guest_tools_status == 'guestToolsRunning'
+      - guest_ip is not none
+      - guest_ip | string | length > 0
+    fail_msg: "VM {{ vm_name }} is not ready."
+    success_msg: "VM {{ vm_name }} is powered on, VMware Tools are running and IP is available."
+
+- name: Show guest readiness
+  ansible.builtin.debug:
+    msg:
+      - "VM: {{ vm_name }}"
+      - "Power: {{ guest_info.instance.hw_power_status }}"
+      - "VMware Tools: {{ guest_info.instance.guest_tools_status }}"
+      - "IP: {{ guest_ip }}"

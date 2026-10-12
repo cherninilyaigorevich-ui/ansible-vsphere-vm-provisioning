@@ -1,0 +1,14 @@
+---
+- name: Read information from VMware vCenter
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Get virtual machine information
+      community.vmware.vmware_vm_info:
+        validate_certs: false
+      register: vm_info
+
+    - name: Show virtual machine names
+      ansible.builtin.debug:
+        msg: "{{ vm_info.virtual_machines | map(attribute='guest_name') | list }}"

@@ -1,0 +1,26 @@
+---
+# ------------------------------------------------------------
+# EXISTING VM VALIDATION
+# ------------------------------------------------------------
+
+- name: Get existing virtual machines for resume
+  community.vmware.vmware_vm_info:
+    validate_certs: false
+  register: resume_vms
+  no_log: true
+
+- name: Find requested VM for resume
+  ansible.builtin.set_fact:
+    resume_vm_matches: >-
+      {{
+        resume_vms.virtual_machines
+        | selectattr('guest_name', 'equalto', vm_name)
+        | list
+      }}
+
+- name: Validate requested VM exists
+  ansible.builtin.assert:
+    that:
+      - resume_vm_matches | length == 1
+    fail_msg: "Resume requested, but VM '{{ vm_name }}' was not found uniquely in vCenter."
+    success_msg: "Existing VM '{{ vm_name }}' found. Deployment will continue without cloning."

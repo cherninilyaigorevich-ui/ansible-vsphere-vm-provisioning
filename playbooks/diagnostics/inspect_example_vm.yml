@@ -1,0 +1,35 @@
+---
+- name: Inspect deployed Example Windows VM
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Check VM name parameter
+      ansible.builtin.assert:
+        that:
+          - vm_name is defined
+          - vm_name | length > 0
+        fail_msg: "Required parameter: vm_name"
+
+    - name: Get information about target VM
+      community.vmware.vmware_guest_info:
+        name: "{{ vm_name }}"
+        validate_certs: false
+      register: example_vm
+
+    - name: Show VM summary
+      ansible.builtin.debug:
+        msg:
+          - "Name: {{ example_vm.instance.hw_name }}"
+          - "Template: {{ example_vm.instance.hw_is_template }}"
+          - "Folder: {{ example_vm.instance.hw_folder }}"
+          - "ESXi: {{ example_vm.instance.hw_esxi_host }}"
+          - "Datastore: {{ example_vm.instance.hw_datastores }}"
+          - "CPU: {{ example_vm.instance.hw_processor_count }} vCPU"
+          - "Cores/socket: {{ example_vm.instance.hw_cores_per_socket }}"
+          - "RAM: {{ example_vm.instance.hw_memtotal_mb }} MB"
+          - "Network: {{ example_vm.instance.hw_eth0.summary }}"
+          - "Guest OS: {{ example_vm.instance.hw_guest_full_name }}"
+          - "Power: {{ example_vm.instance.hw_power_status }}"
+          - "IPv4: {{ example_vm.instance.ipv4 | default('') }}"
+          - "VMware Tools: {{ example_vm.instance.guest_tools_status }}"

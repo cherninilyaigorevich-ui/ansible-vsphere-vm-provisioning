@@ -1,0 +1,17 @@
+---
+# REFERENCE ONLY: copy to vault.yml, replace placeholders and encrypt using ansible-vault.
+# Never commit vault.yml, even encrypted.
+vault_credentials:
+  vmware:
+    password: "REPLACE_ME"
+  horizon:
+    password: "REPLACE_ME"
+  sites:
+    spb:
+      ad_read_password: "REPLACE_ME"
+      ad_join_password: "REPLACE_ME"
+      windows_local_admin_password: "REPLACE_ME"
+    msk:
+      ad_read_password: "REPLACE_ME"
+      ad_join_password: "REPLACE_ME"
+      windows_local_admin_password: "REPLACE_ME"

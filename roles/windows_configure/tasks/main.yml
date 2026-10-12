@@ -1,0 +1,34 @@
+---
+# ------------------------------------------------------------
+# WINDOWS HOSTNAME
+# ------------------------------------------------------------
+
+- name: Configure Windows hostname
+  ansible.windows.win_hostname:
+    name: "{{ inventory_hostname }}"
+  register: rename_result
+
+- name: Reboot after hostname change
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+  when: rename_result.reboot_required
+
+
+# ------------------------------------------------------------
+# ACTIVE DIRECTORY DOMAIN JOIN
+# ------------------------------------------------------------
+
+- name: Join Windows workstation to Active Directory
+  microsoft.ad.membership:
+    dns_domain_name: "{{ target_domain }}"
+    domain_admin_user: "{{ domain_username }}"
+    domain_admin_password: "{{ domain_password }}"
+    domain_ou_path: "{{ target_ou }}"
+    state: domain
+  register: domain_join
+  no_log: true
+
+- name: Reboot after domain join
+  ansible.windows.win_reboot:
+    reboot_timeout: 600
+  when: domain_join.reboot_required

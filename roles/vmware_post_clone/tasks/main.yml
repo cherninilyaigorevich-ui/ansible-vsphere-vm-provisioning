@@ -1,0 +1,46 @@
+---
+# ==================================================================
+# VMWARE POST-CLONE NORMALIZATION
+#
+# Idempotent tasks that may safely run both:
+# - immediately after a new clone;
+# - during resume_stage=windows.
+#
+# Golden Image is never modified.
+# ==================================================================
+
+- name: Clear VM annotation
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ playbook_dir }}/../scripts/clear_vm_annotation.py"
+      - --vm-name
+      - "{{ vm_name }}"
+  register: clear_annotation_result
+
+  changed_when: >
+    'CHANGED:' in clear_annotation_result.stdout
+
+  failed_when: >
+    clear_annotation_result.rc != 0
+
+
+- name: Read VM information after metadata cleanup
+  community.vmware.vmware_guest_info:
+    datacenter: "{{ vmware.datacenter }}"
+    name: "{{ vm_name }}"
+    validate_certs: false
+  register: post_clone_vm_info
+
+
+- name: Validate VM annotation is empty
+  ansible.builtin.assert:
+    that:
+      - post_clone_vm_info.instance.annotation | default('') | length == 0
+
+    fail_msg: >-
+      VM '{{ vm_name }}' exists, but its Annotation/Notes
+      field is still not empty.
+
+    success_msg: >-
+      VM '{{ vm_name }}' Annotation/Notes field is empty.

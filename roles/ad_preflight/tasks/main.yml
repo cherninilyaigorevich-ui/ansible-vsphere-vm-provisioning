@@ -1,0 +1,105 @@
+---
+# ==================================================================
+# ACTIVE DIRECTORY PREFLIGHT
+#
+# Read-only safety check.
+#
+# This role NEVER:
+#   - creates AD computer objects
+#   - modifies AD computer objects
+#   - deletes AD computer objects
+#
+# Provisioning is allowed only when:
+#   1. every configured Domain Controller can be queried;
+#   2. the requested computer name is absent on every DC.
+# ==================================================================
+
+- name: Validate Active Directory preflight configuration
+  ansible.builtin.assert:
+    that:
+      - site_config.ad is defined
+      - site_config.ad.servers is defined
+      - site_config.ad.servers | length > 0
+      - site_config.ad.base_dn is defined
+      - site_config.ad.base_dn | length > 0
+    fail_msg: >-
+      Active Directory preflight configuration is incomplete
+      for site '{{ site }}'.
+
+- name: Query all configured Active Directory domain controllers
+  block:
+    - name: Search computer object on Domain Controller
+      community.general.ldap_search:
+        server_uri: "{{ item }}"
+        start_tls: "{{ site_config.ad.start_tls | default(false) }}"
+        validate_certs: "{{ site_config.ad.validate_certs | default(true) }}"
+
+        bind_dn: "{{ ad_bind_username }}"
+        bind_pw: "{{ ad_bind_password }}"
+
+        dn: "{{ site_config.ad.base_dn }}"
+        scope: children
+        referrals_chasing: disabled
+
+        filter: "(&(objectClass=computer)(|(cn={{ vm_name }})(sAMAccountName={{ vm_name }}$)))"
+
+        attrs:
+          - cn
+          - sAMAccountName
+          - dNSHostName
+
+      loop: "{{ site_config.ad.servers }}"
+      loop_control:
+        label: "{{ item }}"
+      register: ad_dc_queries
+      no_log: true
+
+  rescue:
+    - name: Stop because Active Directory preflight could not query all DCs
+      ansible.builtin.fail:
+        msg: >-
+          Active Directory preflight failed.
+          One or more configured Domain Controllers could not be queried.
+          No VM has been created.
+          Check LDAPS connectivity, certificate validation and AD credentials,
+          then rerun the deployment.
+
+- name: Collect AD computer objects returned by all Domain Controllers
+  ansible.builtin.set_fact:
+    ad_existing_computer_dns: >-
+      {{
+        ad_dc_queries.results
+        | map(attribute='results')
+        | flatten
+        | map(attribute='dn')
+        | unique
+        | list
+      }}
+
+- name: Ensure computer name is free in Active Directory
+  ansible.builtin.assert:
+    that:
+      - ad_existing_computer_dns | length == 0
+    fail_msg: >-
+      Computer object '{{ vm_name }}' already exists in Active Directory:
+      {{ ad_existing_computer_dns | join(', ') }}.
+      No VM has been created.
+      Verify the existing AD computer object manually.
+      If the object is obsolete, remove it manually and wait for AD
+      replication before rerunning the deployment.
+    success_msg: >-
+      Computer name '{{ vm_name }}' is absent on all configured
+      Active Directory Domain Controllers.
+
+- name: Show Active Directory preflight result
+  ansible.builtin.debug:
+    msg:
+      - "========================================"
+      - "ACTIVE DIRECTORY PREFLIGHT PASSED"
+      - "========================================"
+      - "Computer name: {{ vm_name }}"
+      - "Domain: {{ site_config.domain }}"
+      - "Domain Controllers checked: {{ site_config.ad.servers | length }}"
+      - "Existing AD objects: 0"
+      - "Result: SAFE TO PROVISION"
+      - "========================================"

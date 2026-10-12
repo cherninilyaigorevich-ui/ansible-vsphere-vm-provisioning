@@ -1,0 +1,26 @@
+---
+- name: Inspect Example Windows template
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Get information about ExampleW10-000
+      community.vmware.vmware_guest_info:
+        name: ExampleW10-000
+        validate_certs: false
+      register: example_template
+
+    - name: Show template summary
+      ansible.builtin.debug:
+        msg:
+          - "Name: {{ example_template.instance.hw_name }}"
+          - "Template: {{ example_template.instance.hw_is_template }}"
+          - "Folder: {{ example_template.instance.hw_folder }}"
+          - "ESXi: {{ example_template.instance.hw_esxi_host }}"
+          - "Datastore: {{ example_template.instance.hw_datastores }}"
+          - "CPU: {{ example_template.instance.hw_processor_count }} vCPU"
+          - "Cores/socket: {{ example_template.instance.hw_cores_per_socket }}"
+          - "RAM: {{ example_template.instance.hw_memtotal_mb }} MB"
+          - "Network: {{ example_template.instance.hw_eth0.summary }}"
+          - "Guest OS: {{ example_template.instance.hw_guest_full_name }}"
+          - "Power: {{ example_template.instance.hw_power_status }}"

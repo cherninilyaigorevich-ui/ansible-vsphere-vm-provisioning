@@ -1,0 +1,150 @@
+---
+# ==================================================================
+# VMWARE CLONE
+#
+# Safety:
+# - target VM must not already exist;
+# - golden template must exist exactly once;
+# - selected datastore must exist and be usable;
+# - clone is created powered off;
+# ==================================================================
+
+# ------------------------------------------------------------
+# 1. TARGET VM SAFETY CHECK
+# ------------------------------------------------------------
+
+- name: Refresh VMware VM inventory before clone
+  community.vmware.vmware_vm_info:
+    validate_certs: false
+  register: pre_clone_vm_info
+
+- name: Find target VM before clone
+  ansible.builtin.set_fact:
+    pre_clone_target_matches: >-
+      {{
+        pre_clone_vm_info.virtual_machines
+        | selectattr('guest_name', 'equalto', vm_name)
+        | list
+      }}
+
+- name: Ensure target VM does not already exist
+  ansible.builtin.assert:
+    that:
+      - pre_clone_target_matches | length == 0
+    fail_msg: >-
+      VM '{{ vm_name }}' already exists in vCenter.
+      Clone operation has been stopped.
+    success_msg: >-
+      Target VM '{{ vm_name }}' does not exist.
+      Safe to continue.
+
+
+# ------------------------------------------------------------
+# 2. GOLDEN TEMPLATE CHECK
+# ------------------------------------------------------------
+
+- name: Find golden template
+  ansible.builtin.set_fact:
+    pre_clone_template_matches: >-
+      {{
+        pre_clone_vm_info.virtual_machines
+        | selectattr('guest_name', 'equalto', vmware.template)
+        | list
+      }}
+
+- name: Ensure golden template exists exactly once
+  ansible.builtin.assert:
+    that:
+      - pre_clone_template_matches | length == 1
+    fail_msg: >-
+      Expected exactly one VMware object named '{{ vmware.template }}',
+      but found {{ pre_clone_template_matches | length }}.
+      Clone operation has been stopped.
+    success_msg: >-
+      Golden template '{{ vmware.template }}' was found.
+
+
+# ------------------------------------------------------------
+# 3. DATASTORE SAFETY CHECK
+# ------------------------------------------------------------
+
+- name: Refresh VMware datastore inventory before clone
+  community.vmware.vmware_datastore_info:
+    datacenter_name: "{{ vmware.datacenter }}"
+    validate_certs: false
+  register: pre_clone_datastore_info
+
+- name: Find selected datastore before clone
+  ansible.builtin.set_fact:
+    pre_clone_datastore_matches: >-
+      {{
+        pre_clone_datastore_info.datastores
+        | selectattr('name', 'equalto', selected_datastore.name)
+        | list
+      }}
+
+- name: Ensure selected datastore exists exactly once
+  ansible.builtin.assert:
+    that:
+      - pre_clone_datastore_matches | length == 1
+    fail_msg: >-
+      Selected datastore '{{ selected_datastore.name }}'
+      was not found exactly once in vCenter.
+      Clone operation has been stopped.
+    success_msg: >-
+      Selected datastore '{{ selected_datastore.name }}'
+      exists in vCenter.
+
+- name: Save selected datastore information
+  ansible.builtin.set_fact:
+    pre_clone_datastore: "{{ pre_clone_datastore_matches[0] }}"
+
+- name: Ensure selected datastore is usable
+  ansible.builtin.assert:
+    that:
+      - pre_clone_datastore.accessible | bool
+      - pre_clone_datastore.maintenanceMode == 'normal'
+    fail_msg: >-
+      Datastore '{{ selected_datastore.name }}' is not usable.
+      accessible={{ pre_clone_datastore.accessible | default('unknown') }},
+      maintenanceMode={{ pre_clone_datastore.maintenanceMode | default('unknown') }}.
+      Clone operation has been stopped.
+    success_msg: >-
+      Datastore '{{ selected_datastore.name }}' is accessible
+      and not in maintenance mode.
+
+
+# ------------------------------------------------------------
+# 4. CLONE VM
+# ------------------------------------------------------------
+
+- name: Clone VM from golden template
+  community.vmware.vmware_guest:
+    datacenter: "{{ vmware.datacenter }}"
+    folder: "{{ site_config.vm_folder }}"
+
+    name: "{{ vm_name }}"
+    template: "{{ vmware.template }}"
+
+    esxi_hostname: "{{ selected_host.name }}"
+    datastore: "{{ selected_datastore.name }}"
+
+    networks:
+      - name: "{{ site_config.vm_network }}"
+
+    state: poweredoff
+    validate_certs: false
+
+  register: clone_result
+
+- name: Show VMware clone result
+  ansible.builtin.debug:
+    msg:
+      - "VM: {{ vm_name }}"
+      - "Template: {{ vmware.template }}"
+      - "ESXi: {{ selected_host.name }}"
+      - "Datastore: {{ selected_datastore.name }}"
+      - "Folder: {{ site_config.vm_folder }}"
+      - "Network: {{ site_config.vm_network }}"
+      - "Power state: poweredOff"
+      - "Annotation: empty"

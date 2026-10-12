@@ -1,0 +1,240 @@
+---
+# ------------------------------------------------------------
+# HORIZON LOGIN
+# ------------------------------------------------------------
+
+- name: Login to VMware Horizon REST API
+  ansible.builtin.uri:
+    url: "{{ horizon.url }}/rest/login"
+    method: POST
+    validate_certs: "{{ horizon.validate_certs }}"
+    body_format: json
+    body:
+      domain: "{{ horizon.domain }}"
+      username: "{{ horizon_username }}"
+      password: "{{ horizon_password }}"
+    status_code: 200
+  register: horizon_login
+  no_log: true
+
+- name: Save Horizon access token
+  ansible.builtin.set_fact:
+    horizon_access_token: "{{ horizon_login.json.access_token }}"
+  no_log: true
+
+
+# ------------------------------------------------------------
+# FIND TARGET DESKTOP POOL
+# ------------------------------------------------------------
+
+- name: Get Horizon desktop pools
+  ansible.builtin.uri:
+    url: "{{ horizon.url }}/rest/inventory/v1/desktop-pools"
+    method: GET
+    validate_certs: "{{ horizon.validate_certs }}"
+    headers:
+      Authorization: "Bearer {{ horizon_access_token }}"
+    status_code: 200
+  register: horizon_pools
+  no_log: true
+
+- name: Find target Horizon desktop pool
+  ansible.builtin.set_fact:
+    horizon_target_pools: >-
+      {{
+        horizon_pools.json
+        | selectattr('name', 'equalto', horizon_pool_name)
+        | list
+      }}
+
+- name: Validate target Horizon desktop pool
+  ansible.builtin.assert:
+    that:
+      - horizon_target_pools | length == 1
+    fail_msg: "Horizon pool '{{ horizon_pool_name }}' was not found or is not unique."
+
+- name: Save target Horizon pool ID
+  ansible.builtin.set_fact:
+    horizon_pool_id: "{{ horizon_target_pools[0].id }}"
+
+
+# ------------------------------------------------------------
+# CHECK EXISTING MACHINE
+# ------------------------------------------------------------
+
+- name: Get existing Horizon machines
+  ansible.builtin.uri:
+    url: "{{ horizon.url }}/rest/inventory/v1/machines"
+    method: GET
+    validate_certs: "{{ horizon.validate_certs }}"
+    headers:
+      Authorization: "Bearer {{ horizon_access_token }}"
+    status_code: 200
+  register: horizon_machines
+  no_log: true
+
+- name: Find machines with target VM name
+  ansible.builtin.set_fact:
+    horizon_same_name_machines: >-
+      {{
+        horizon_machines.json
+        | selectattr('name', 'equalto', horizon_vm_name)
+        | list
+      }}
+
+- name: Ensure target VM is not registered in another Horizon pool
+  ansible.builtin.assert:
+    that:
+      - horizon_same_name_machines | length <= 1
+      - >
+        horizon_same_name_machines | length == 0
+        or
+        (horizon_same_name_machines[0].desktop_pool_id | default('')) == horizon_pool_id
+    fail_msg: "VM '{{ horizon_vm_name }}' already exists in another Horizon pool."
+
+- name: Check whether VM is already in target pool
+  ansible.builtin.set_fact:
+    horizon_machine_already_in_pool: >-
+      {{
+        horizon_same_name_machines | length == 1
+        and
+        (horizon_same_name_machines[0].desktop_pool_id | default('')) == horizon_pool_id
+      }}
+
+
+# ------------------------------------------------------------
+# FIND VCENTER VM
+# ------------------------------------------------------------
+
+- name: Get vCenter virtual machines from Horizon
+  ansible.builtin.uri:
+    url: "{{ horizon.url }}/rest/external/v1/virtual-machines?vcenter_id={{ horizon.vcenter_id }}"
+    method: GET
+    validate_certs: "{{ horizon.validate_certs }}"
+    headers:
+      Authorization: "Bearer {{ horizon_access_token }}"
+    status_code: 200
+  register: horizon_vcenter_vms
+  no_log: true
+  when: not horizon_machine_already_in_pool
+
+- name: Find provisioned VM in Horizon vCenter inventory
+  ansible.builtin.set_fact:
+    horizon_target_vms: >-
+      {{
+        horizon_vcenter_vms.json
+        | selectattr('name', 'equalto', horizon_vm_name)
+        | list
+      }}
+  when: not horizon_machine_already_in_pool
+
+- name: Validate provisioned VM in Horizon vCenter inventory
+  ansible.builtin.assert:
+    that:
+      - horizon_target_vms | length == 1
+    fail_msg: "VM '{{ horizon_vm_name }}' was not found uniquely in Horizon vCenter inventory."
+  when: not horizon_machine_already_in_pool
+
+
+# ------------------------------------------------------------
+# ADD MACHINE TO MANUAL DESKTOP POOL
+# ------------------------------------------------------------
+
+- name: Add VM to Horizon desktop pool
+  ansible.builtin.uri:
+    url: "{{ horizon.url }}/rest/inventory/v1/desktop-pools/{{ horizon_pool_id }}/action/add-machines"
+    method: POST
+    validate_certs: "{{ horizon.validate_certs }}"
+    headers:
+      Authorization: "Bearer {{ horizon_access_token }}"
+    body_format: json
+    body:
+      - "{{ horizon_target_vms[0].id }}"
+    status_code: 200
+  register: horizon_add_result
+  when: not horizon_machine_already_in_pool
+
+
+# ------------------------------------------------------------
+# WAIT FOR HORIZON AGENT
+# ------------------------------------------------------------
+
+- name: Define acceptable Horizon machine states
+  ansible.builtin.set_fact:
+    horizon_ready_states:
+      - AVAILABLE
+      - CONNECTED
+      - DISCONNECTED
+      - UNASSIGNED_USER_CONNECTED
+      - UNASSIGNED_USER_DISCONNECTED
+      - ALREADY_USED
+
+- name: Wait for Horizon Agent to become ready
+  block:
+    - name: Poll Horizon machine state
+      ansible.builtin.uri:
+        url: "{{ horizon.url }}/rest/inventory/v1/machines"
+        method: GET
+        validate_certs: "{{ horizon.validate_certs }}"
+        headers:
+          Authorization: "Bearer {{ horizon_access_token }}"
+        status_code: 200
+      register: horizon_agent_poll
+      no_log: true
+      until:
+        - >
+          (
+            horizon_agent_poll.json
+            | selectattr('name', 'equalto', horizon_vm_name)
+            | selectattr('desktop_pool_id', 'defined')
+            | selectattr('desktop_pool_id', 'equalto', horizon_pool_id)
+            | map(attribute='state')
+            | list
+            | first
+            | default('')
+          ) in horizon_ready_states
+      retries: 30
+      delay: 10
+
+  rescue:
+    - name: Horizon Agent readiness timeout
+      ansible.builtin.fail:
+        msg: >-
+          VM '{{ horizon_vm_name }}' is registered in Horizon pool
+          '{{ horizon_pool_name }}', but Horizon Agent did not become ready
+          within 300 seconds. Check Horizon Agent status/connectivity manually,
+          then resume deployment for the same VM.
+
+
+# ------------------------------------------------------------
+# FINAL HORIZON VALIDATION
+# ------------------------------------------------------------
+
+- name: Find final Horizon machine
+  ansible.builtin.set_fact:
+    horizon_final_machines: >-
+      {{
+        horizon_agent_poll.json
+        | selectattr('name', 'equalto', horizon_vm_name)
+        | selectattr('desktop_pool_id', 'defined')
+        | selectattr('desktop_pool_id', 'equalto', horizon_pool_id)
+        | list
+      }}
+
+- name: Validate Horizon registration and Agent state
+  ansible.builtin.assert:
+    that:
+      - horizon_final_machines | length == 1
+      - horizon_final_machines[0].state in horizon_ready_states
+    fail_msg: "VM '{{ horizon_vm_name }}' is not ready in Horizon."
+    success_msg: "VM '{{ horizon_vm_name }}' is ready in Horizon pool '{{ horizon_pool_name }}'."
+
+- name: Show Horizon result
+  ansible.builtin.debug:
+    msg:
+      - "VM: {{ horizon_vm_name }}"
+      - "Horizon pool: {{ horizon_pool_name }}"
+      - "Horizon machine ID: {{ horizon_final_machines[0].id }}"
+      - "Agent version: {{ horizon_final_machines[0].agent_version | default('unknown') }}"
+      - "State: {{ horizon_final_machines[0].state }}"
+      - "Already existed: {{ horizon_machine_already_in_pool }}"

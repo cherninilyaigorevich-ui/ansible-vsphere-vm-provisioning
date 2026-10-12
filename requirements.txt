@@ -1,0 +1,5 @@
+pyvmomi
+requests
+pywinrm
+requests-ntlm
+python-ldap

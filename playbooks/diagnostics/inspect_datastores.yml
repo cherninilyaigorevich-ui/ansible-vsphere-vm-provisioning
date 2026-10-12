@@ -1,0 +1,19 @@
+---
+- name: Inspect VMware datastores
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Get datastore information
+      community.vmware.vmware_datastore_info:
+        datacenter: "{{ vmware.datacenter }}"
+        validate_certs: false
+      register: datastore_info
+
+    - name: Show host08 datastore information
+      ansible.builtin.debug:
+        msg: "{{ item }}"
+      loop: "{{ datastore_info.datastores }}"
+      when: item.name is match('^host08-')
+      loop_control:
+        label: "{{ item.name }}"

@@ -1,0 +1,88 @@
+---
+# ==================================================================
+# VMWARE VCENTER
+# ==================================================================
+
+vmware:
+  hostname: "vcenter.corp.example.com"
+
+  datacenter: "Example Datacenter"
+  template: "ExampleW10-000"
+
+  esxi_hosts:
+    - "vmware-host-02.corp.example.com"
+    - "vmware-host-03.corp.example.com"
+    - "vmware-host-04.corp.example.com"
+    - "vmware-host-05.corp.example.com"
+    - "vmware-host-06.corp.example.com"
+    - "vmware-host-07.corp.example.com"
+    - "vmware-host-08.corp.example.com"
+
+
+# ==================================================================
+# SITE-SPECIFIC CONFIGURATION
+# ==================================================================
+
+sites:
+  spb:
+    vm_prefix: "ExampleW10-"
+
+    domain: "corp.example.com"
+    ou: "OU=Virtual Desktops,OU=WORKSTATIONS,DC=corp,DC=example,DC=com"
+
+    horizon_pool: "Workstations-SPB"
+
+    vm_folder: "Workstation SPB"
+    vm_network: "vlan100-lan"
+
+    ad:
+      servers:
+        - "ldaps://dc-server-1.corp.example.com:636"
+        - "ldaps://dc-server-2.corp.example.com:636"
+
+      base_dn: "DC=corp,DC=example,DC=com"
+      start_tls: false
+      validate_certs: true
+
+  msk:
+    vm_prefix: "BranchW10-"
+
+    domain: "branch.corp.example.com"
+    ou: "OU=Virtual Desktops,OU=WORKSTATIONS,DC=branch,DC=corp,DC=example,DC=com"
+
+    horizon_pool: "Workstations-MSK"
+
+
+# ==================================================================
+# AUTOMATION ACCOUNTS
+#
+# Usernames are not secrets.
+# Passwords are stored in:
+# inventory/group_vars/all/vault.yml
+# ==================================================================
+
+accounts:
+  vmware:
+    username: "svc_ansible_vcenter@vsphere.local"
+
+  horizon:
+    username: "svc_ansible_horizon"
+
+  sites:
+    spb:
+      ad_read_username: "svc_ad_reader@corp.example.com"
+      ad_join_username: "svc_ad_join@corp.example.com"
+      windows_local_admin_username: '.\local_admin'
+
+
+# ==================================================================
+# VMWARE HORIZON
+# ==================================================================
+
+horizon:
+  url: "https://vmware-view.corp.example.com"
+  domain: "CORP"
+
+  vcenter_id: "00000000-0000-0000-0000-000000000000"
+
+  validate_certs: false

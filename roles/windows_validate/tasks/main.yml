@@ -1,0 +1,48 @@
+---
+- name: Gather Windows facts
+  ansible.windows.setup:
+
+- name: Get computer domain information
+  ansible.windows.win_powershell:
+    script: |
+      Get-CimInstance Win32_ComputerSystem |
+        Select-Object Name, Domain, PartOfDomain
+  register: computer_info
+  changed_when: false
+
+- name: Get VMware Tools service
+  ansible.windows.win_service_info:
+    name: VMTools
+  register: vmtools_service
+
+- name: Get VMware Horizon Agent service
+  ansible.windows.win_service_info:
+    name: WSNM
+  register: horizon_service
+
+- name: Validate VMware services
+  ansible.builtin.assert:
+    that:
+      - vmtools_service.exists
+      - vmtools_service.services[0].state == 'started'
+      - horizon_service.exists
+      - horizon_service.services[0].state == 'started'
+    success_msg: "VMware Tools and Horizon Agent validation passed"
+    fail_msg: "VMware Tools or Horizon Agent is missing or not running"
+
+- name: Validate hostname and domain
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.hostname | lower == inventory_hostname | lower
+      - ansible_facts.windows_domain | lower == target_domain | lower
+    success_msg: "Hostname and domain validation passed"
+    fail_msg: "Hostname or domain validation failed"
+
+- name: Show Windows validation result
+  ansible.builtin.debug:
+    msg:
+      - "Hostname: {{ ansible_facts.hostname }}"
+      - "FQDN: {{ ansible_facts.fqdn }}"
+      - "Domain: {{ ansible_facts.windows_domain }}"
+      - "VMware Tools: {{ vmtools_service.services[0].state }}"
+      - "Horizon Agent: {{ horizon_service.services[0].state }}"

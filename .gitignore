@@ -1,0 +1,20 @@
+# Credentials and local state
+**/vault.yml
+**/vault.yaml
+**/.vault_pass*
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+!.env.example
+*.retry
+*.log
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store

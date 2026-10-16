@@ -1,6 +1,5 @@
 # Ansible VMware vSphere VM Provisioning
 
-![CI](https://github.com/cherninilyaigorevich-ui/ansible-vsphere-vm-provisioning/actions/workflows/ci.yml/badge.svg)
 
 **Role-based automation for provisioning Windows virtual desktops on VMware vSphere, with Active Directory preflight checks and VMware Horizon registration.**
 
@@ -89,6 +88,6 @@ See [workflow notes](docs/WORKFLOW.md) for safeguards and limitations.
 
 This public portfolio version is **not verified end-to-end in a public lab**. The CI validates syntax and repository hygiene only. Real vSphere, AD and Horizon integration needs credentials, connectivity and environment-specific testing.
 
-## Author
+## Notes
 
-Infrastructure / System Engineering portfolio project. [GitHub profile](https://github.com/cherninilyaigorevich-ui).
+Demonstration repository with fictional infrastructure configuration. Validate every inventory and credential reference before deployment.

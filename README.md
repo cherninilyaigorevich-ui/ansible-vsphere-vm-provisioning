@@ -3,7 +3,6 @@
 
 **Role-based automation for provisioning Windows virtual desktops on VMware vSphere, with Active Directory preflight checks and VMware Horizon registration.**
 
-> **Portfolio adaptation:** A sanitized, standalone example based on infrastructure automation experience. All infrastructure names, accounts, network addresses, identifiers and examples are fictional. **Not a drop-in production deployment.** Requires an authorized vSphere/AD/Horizon lab. No real credentials are included.
 
 ## Highlights
 
@@ -88,6 +87,3 @@ See [workflow notes](docs/WORKFLOW.md) for safeguards and limitations.
 
 This public portfolio version is **not verified end-to-end in a public lab**. The CI validates syntax and repository hygiene only. Real vSphere, AD and Horizon integration needs credentials, connectivity and environment-specific testing.
 
-## Notes
-
-Demonstration repository with fictional infrastructure configuration. Validate every inventory and credential reference before deployment.
